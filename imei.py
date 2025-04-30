@@ -1,4 +1,3 @@
-
 import pandas as pd
 import streamlit as st
 import numpy as np
@@ -60,7 +59,9 @@ def load_data():
         cols_to_drop = [col for col in df.columns if 'Unnamed: 34' in col or 'Unnamed: 0' in col or 'Dispute' in col]
         df = df.drop(cols_to_drop, axis=1, errors='ignore')
         
-       
+        # Convert IMEI column to string and clean it
+        if 'IMEI' in df.columns:
+            df['IMEI'] = df['IMEI'].astype(str).str.replace('.0', '')
             
         # Display sample IMEI for verification
         if not df.empty and 'IMEI' in df.columns:
@@ -275,4 +276,3 @@ if st.sidebar.checkbox("Show Raw Data"):
     # Display all column names for troubleshooting
     st.sidebar.subheader("All available columns:")
     st.sidebar.write(df.columns.tolist())
-
