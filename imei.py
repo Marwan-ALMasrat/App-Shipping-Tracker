@@ -6,121 +6,127 @@ import time
 import os
 import tempfile
 import urllib.request
+import logging
+from functools import lru_cache
+
+# إعداد التسجيل
+logging.basicConfig(filename='app.log', level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
 st.set_page_config(page_title="Returns Tracker (IMEI)", layout="wide")
 
-def fetch_excel_file():
+def clean_imei(imei_value):
+    """تنظيف قيمة IMEI وإعادتها كسلسلة."""
+    try:
+        if imei_value is None or pd.isna(imei_value):
+            return ""
+        imei_str = str(imei_value).strip().replace('.0', '')
+        return imei_str
+    except Exception as e:
+        logging.error(f"Error cleaning IMEI {imei_value}: {e}")
+        return ""
+
+@lru_cache(maxsize=1)
+def fetch_excel_file(timestamp):
     """
-    Downloads the Excel file from Google Sheets and saves it to a temporary location.
-    Returns the path to the downloaded file.
+    تنزيل ملف Excel من Google Sheets وحفظه في موقع مؤقت.
+    يتم تخزين النتيجة مؤقتًا باستخدام lru_cache.
     """
     try:
-        # Create a temporary file
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
-        temp_file.close()
-        
-        # URL to the Google Sheet (with timestamp to prevent caching)
-        timestamp = int(time.time())
-        url = f'https://docs.google.com/spreadsheets/d/1Khq4LytjOgY0vN-LTO9MSp7smRQP35hP/export?format=xlsx&_ts={timestamp}'
-        
-        # Download the file
-        urllib.request.urlretrieve(url, temp_file.name)
-        
-        # Log the download
-        st.sidebar.success(f"Downloaded Excel file at {time.strftime('%H:%M:%S')}")
-        
-        return temp_file.name
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
+            url = f'https://docs.google.com/spreadsheets/d/1Khq4LytjOgY0vN-LTO9MSp7smRQP35hP/export?format=xlsx&_ts={timestamp}'
+            urllib.request.urlretrieve(url, temp_file.name)
+            
+            # التحقق من حجم الملف
+            file_size = os.path.getsize(temp_file.name)
+            if file_size < 1024:  # الملف أقل من 1KB يعتبر غير صالح
+                raise ValueError("Downloaded file is too small or empty")
+                
+            st.sidebar.success(f"Downloaded Excel file at {time.strftime('%H:%M:%S')}")
+            return temp_file.name
     except Exception as e:
+        logging.error(f"Failed to download Excel file: {e}")
         st.error(f"Failed to download Excel file: {e}")
         return None
 
 def load_data():
-    """
-    Loads data from the downloaded Excel file.
-    """
+    """تحميل البيانات من ملف Excel."""
     try:
-        # Get the file path
-        file_path = fetch_excel_file()
+        timestamp = int(time.time())
+        file_path = fetch_excel_file(timestamp)
         
         if not file_path or not os.path.exists(file_path):
             st.error("Could not download the Excel file.")
             return pd.DataFrame()
         
-        # Read the Excel file
         df = pd.read_excel(file_path)
         
-        # Clean up the temporary file
+        # تنظيف الملف المؤقت
         try:
             os.unlink(file_path)
         except:
-            pass
+            logging.warning(f"Failed to delete temporary file: {file_path}")
         
-        # Drop unnecessary columns
+        # إزالة الأعمدة غير الضرورية
         cols_to_drop = [col for col in df.columns if 'Unnamed: 34' in col or 'Unnamed: 0' in col or 'Dispute' in col]
         df = df.drop(cols_to_drop, axis=1, errors='ignore')
         
-       # Clean IMEI value
-       imei_str = str(imei_value).strip().replace('.0', '')
-
-            
-        # Display sample IMEI for verification
+        # تنظيف عمود IMEI
+        if 'IMEI' in df.columns:
+            df['IMEI'] = df['IMEI'].apply(clean_imei)
+        
+        # عرض معلومات التتبع
         if not df.empty and 'IMEI' in df.columns:
             st.sidebar.write(f"Number of records: {len(df)}")
             st.sidebar.write(f"Sample IMEI: {df['IMEI'].iloc[0]}")
-            st.sidebar.write(f"Last updated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+            st.sidebar.text(f"Last updated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
         
         return df
     except Exception as e:
+        logging.error(f"Error loading data: {e}")
         st.error(f"Error loading data: {e}")
         st.sidebar.text(traceback.format_exc())
         return pd.DataFrame()
 
-# Search function
 def search_imei(imei_value, df):
-    """
-    Search for IMEI in the dataframe and return appropriate response
-    Returns:
-    - "short" (string): if IMEI is too short
-    - None: if IMEI not found
-    - dict: if IMEI found (converted from Series to dict)
-    """
-    # Check if IMEI column exists
+    """البحث عن IMEI في البيانات."""
     if 'IMEI' not in df.columns:
         st.error("IMEI column not found in the data!")
-          return None
+        return None
     
-# Clean IMEI value
-    imei_str = str(imei_value).strip().replace('.0', '')
+    imei_str = clean_imei(imei_value)
     
-    # Debug information
-    st.sidebar.write(f"Searching for: {imei_str}")
+    # معلومات تصحيح الأخطاء
+    st.sidebar.text(f"Searching for: {imei_str}")
     if not df.empty:
         sample_values = df['IMEI'].head(3).tolist()
-        st.sidebar.write(f"Sample values in IMEI column: {sample_values}")
+        st.sidebar.text(f"Sample values in IMEI column: {sample_values}")
     
-    # Check IMEI length
+    # التحقق من طول IMEI
     if len(imei_str) < 15:
-        return "short"  # Return a string, not a Series
+        return "short"
     
-    # Find exact match
+    # البحث الدقيق
     matches = df[df['IMEI'] == imei_str]
     
     if len(matches) > 0:
-        # Convert Series to dict to avoid comparison issues
         return matches.iloc[0].to_dict()
-    else:
-        # Try more flexible search
+    
+    # البحث المرن (مع التحقق من القيم الفارغة)
+    try:
         flexible_matches = df[df['IMEI'].str.contains(imei_str, na=False)]
         if len(flexible_matches) > 0:
             return flexible_matches.iloc[0].to_dict()
-        return None
+    except Exception as e:
+        logging.warning(f"Flexible search failed: {e}")
+    
+    return None
 
-# Format value function - handles various data types
 def format_value(key, value):
+    """تنسيق القيم بناءً على نوع البيانات."""
     if pd.isna(value):
         return 'Not available'
     
-    # Check if it could be a financial value
     financial_keywords = ['cost', 'price', 'amount', 'fee', 'value', 'tax', 'refund', 'shipping', 'total']
     is_financial = any(keyword in key.lower() for keyword in financial_keywords)
     
@@ -130,7 +136,6 @@ def format_value(key, value):
         except:
             return value
     
-    # Format date values
     date_keywords = ['date', 'time']
     is_date = any(keyword in key.lower() for keyword in date_keywords)
     
@@ -142,26 +147,26 @@ def format_value(key, value):
         except:
             return value
     
-    # Default return
     return value
 
-# Main app
+# التطبيق الرئيسي
 st.title('Returns Tracker (IMEI)')
 
-# Add a button to force data refresh
+# زر تحديث البيانات
 if st.sidebar.button('⟳ Refresh Data', key='refresh_button'):
-    st.experimental_rerun()  # Force a complete rerun of the app
+    st.cache_data.clear()  # مسح ذاكرة التخزين المؤقت
+    st.experimental_rerun()
 
-# Load data directly
+# تحميل البيانات
 df = load_data()
 
-# Show progress indicator
+# عرض مؤشر التقدم
 if df.empty:
     st.warning("Data was not loaded correctly. Please check the URL.")
 else:
     st.success(f"Successfully loaded {len(df)} records")
 
-# IMEI input
+# إدخال IMEI
 imei = st.text_input('Enter IMEI number to search:', value='354653661425023')
 
 if st.button('Search'):
@@ -169,27 +174,22 @@ if st.button('Search'):
         st.error("Cannot search. Data not available!")
     else:
         try:
-            imei_value = imei.strip()
-            result = search_imei(imei_value, df)
+            result = search_imei(imei, df)
             
-            # Use isinstance() for type checking instead of equality comparison
             if result is None:
-                st.error(f'IMEI not found: {imei_value}!')
-                
-                # Show sample IMEI values for troubleshooting
+                st.error(f'IMEI not found: {imei}!')
                 if 'IMEI' in df.columns:
                     st.write("Some available IMEI values for search:")
                     imei_examples = df['IMEI'].head(5).tolist()
                     for i, ex in enumerate(imei_examples):
                         st.write(f"{i+1}. {ex}")
                 
-            elif result == "short":  # Safe comparison as result is now guaranteed to be a string or dict
+            elif result == "short":
                 st.warning('IMEI number must have at least 15 digits!')
             else:
-                # Display shipping and delivery information
                 delivery_status = result.get('Status.1', 'Unknown')
                 
-                # Create delivery status indicator
+                # تحديد حالة التسليم
                 if delivery_status == 'DELIVERED':
                     status_color = 'green'
                     icon = '✅'
@@ -200,44 +200,41 @@ if st.button('Search'):
                     status_color = 'orange'
                     icon = '⏳'
                 
-                # Show delivery status prominently
+                # عرض حالة التسليم
                 st.markdown(f"""
                 <div style='background-color: #f0f0f0; padding: 20px; border-radius: 10px; margin-bottom: 20px;'>
                     <h2 style='text-align: center; color: {status_color};'>{icon} Delivery Status: {delivery_status}</h2>
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Organize data into categories
+                # تنظيم البيانات في فئات
                 categories = {
                     'Product Information': ['Store ID', 'Store', 'Item ', 'SKU', 'IMEI', 'Exchange IMEI', 'Status'],
                     'Shipping Details': ['Tracking number', 'Status.1', 'Unnamed: 20', 'Unnamed: 21', 'Unnamed: 22'],
                     'Financial Information': ['Cost', 'Price', 'Refund', 'Exchange Price', 'Total', 'Tax', 'Restocking Fee', 'Shipping'],
                     'Return Information': ['Return Invoice', 'Return Date', 'Case Number', 'Name', 'Original Invoice', 'Original Date'],
-                    'Additional Information': []  # Will catch all remaining fields
+                    'Additional Information': []
                 }
                 
-                # Create a set of keys that are already assigned to specific categories
+                # تعيين الأعمدة المتبقية إلى الفئة الإضافية
                 assigned_keys = set()
                 for cat_keys in categories.values():
                     assigned_keys.update(cat_keys)
                 
-                # Assign all remaining keys to Additional Information
                 for key in result.keys():
                     if key not in assigned_keys:
                         categories['Additional Information'].append(key)
                 
-                # Display all data by category
+                # عرض البيانات حسب الفئات
                 for category, fields in categories.items():
-                    if fields:  # Only show categories with fields
+                    if fields:
                         st.subheader(category)
                         
-                        # Create a three-column layout for more compact display
-                        if category != 'Additional Information':  # Regular categories use columns
+                        if category != 'Additional Information':
                             cols = st.columns(3)
                             for i, field in enumerate(fields):
                                 if field in result:
                                     value = format_value(field, result[field])
-                                    # Replace cryptic column names with more readable ones
                                     display_name = field
                                     if field == 'Unnamed: 20':
                                         display_name = 'Shipping Company'
@@ -249,23 +246,24 @@ if st.button('Search'):
                                         display_name = 'Delivery Status'
                                     
                                     cols[i % 3].write(f"**{display_name}:** {value}")
-                        else:  # Additional Information uses full width
+                        else:
                             for field in fields:
                                 if field in result:
                                     value = format_value(field, result[field])
                                     st.write(f"**{field}:** {value}")
                 
-                # Tracking link if available
+                # رابط التتبع
                 tracking_link = result.get('Link', '')
                 if pd.notna(tracking_link) and tracking_link:
                     st.markdown(f"[Tracking Link]({tracking_link})")
         
         except Exception as e:
+            logging.error(f"Search error: {e}")
             st.error(f'An error occurred: {e}')
             st.sidebar.text(traceback.format_exc())
             st.error('Please verify the IMEI number and data format')
 
-# Add option to display raw data for troubleshooting
+# عرض البيانات الخام لتصحيح الأخطاء
 if st.sidebar.checkbox("Show Raw Data"):
     st.sidebar.dataframe(df.head())
     
@@ -273,6 +271,5 @@ if st.sidebar.checkbox("Show Raw Data"):
         st.sidebar.subheader("Sample IMEI values:")
         st.sidebar.write(df['IMEI'].head(10).tolist())
         
-    # Display all column names for troubleshooting
     st.sidebar.subheader("All available columns:")
     st.sidebar.write(df.columns.tolist())
