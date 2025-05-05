@@ -16,11 +16,19 @@ logging.basicConfig(filename='app.log', level=logging.INFO,
 st.set_page_config(page_title="Returns Tracker (IMEI)", layout="wide")
 
 def clean_imei(imei_value):
-    """تنظيف قيمة IMEI وإعادتها كسلسلة."""
+    """تنظيف قيمة IMEI وإعادتها كسلسلة نصية مع الحفاظ على الأصفار."""
     try:
         if imei_value is None or pd.isna(imei_value):
             return ""
-        imei_str = str(imei_value).strip().replace('.0', '')
+            
+        # التحويل إلى سلسلة نصية
+        imei_str = str(imei_value).strip()
+        
+        # إزالة الكسور العشرية (.0) إذا وجدت
+        if imei_str.endswith('.0'):
+            imei_str = imei_str[:-2]
+            
+        # التأكد من أن IMEI يتم معالجته كنص وليس كرقم للحفاظ على الأصفار
         return imei_str
     except Exception as e:
         logging.error(f"Error cleaning IMEI {imei_value}: {e}")
@@ -71,8 +79,11 @@ def load_data():
         cols_to_drop = [col for col in df.columns if 'Unnamed: 34' in col or 'Unnamed: 0' in col or 'Dispute' in col]
         df = df.drop(cols_to_drop, axis=1, errors='ignore')
         
-        # تنظيف عمود IMEI
+        # التأكد من أن عمود IMEI يتم قراءته كنص وليس كرقم
         if 'IMEI' in df.columns:
+            # تحويل عمود IMEI إلى نوع نصي أثناء القراءة
+            df['IMEI'] = df['IMEI'].astype(str)
+            # تنظيف عمود IMEI مع الحفاظ على الأصفار
             df['IMEI'] = df['IMEI'].apply(clean_imei)
         
         # عرض معلومات التتبع
