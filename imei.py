@@ -60,7 +60,7 @@ def load_data():
         df = df.drop(cols_to_drop, axis=1, errors='ignore')
         
        # Clean IMEI value
-        imei_str = str(imei_value).strip().replace('.0', '')
+       imei_str = str(imei_value).strip().replace('.0', '')
 
             
         # Display sample IMEI for verification
@@ -87,7 +87,7 @@ def search_imei(imei_value, df):
     # Check if IMEI column exists
     if 'IMEI' not in df.columns:
         st.error("IMEI column not found in the data!")
-        return None
+          return None
     
 # Clean IMEI value
     imei_str = str(imei_value).strip().replace('.0', '')
