@@ -89,8 +89,7 @@ def search_imei(imei_value, df):
         st.error("IMEI column not found in the data!")
         return None
     
-    # Clean IMEI value
-    imei_str = str(imei_value).strip().replace('.0', '')
+  
     
     # Debug information
     st.sidebar.write(f"Searching for: {imei_str}")
