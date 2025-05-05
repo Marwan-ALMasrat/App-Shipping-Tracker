@@ -59,7 +59,9 @@ def load_data():
         cols_to_drop = [col for col in df.columns if 'Unnamed: 34' in col or 'Unnamed: 0' in col or 'Dispute' in col]
         df = df.drop(cols_to_drop, axis=1, errors='ignore')
         
-      
+       # Clean IMEI value
+        imei_str = str(imei_value).strip().replace('.0', '')
+
             
         # Display sample IMEI for verification
         if not df.empty and 'IMEI' in df.columns:
@@ -87,7 +89,8 @@ def search_imei(imei_value, df):
         st.error("IMEI column not found in the data!")
         return None
     
-
+# Clean IMEI value
+    imei_str = str(imei_value).strip().replace('.0', '')
     
     # Debug information
     st.sidebar.write(f"Searching for: {imei_str}")
