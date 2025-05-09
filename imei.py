@@ -9,6 +9,7 @@ import urllib.request
 import logging
 import re
 import requests
+import io
 from functools import lru_cache
 
 # إعداد التسجيل
@@ -38,99 +39,187 @@ def clean_imei(imei_value):
 
 def extract_file_id_from_url(url):
     """استخراج معرف الملف من رابط Google Drive."""
-    # النمط الأول: /d/FILE_ID/
+    # نمط للرابط القياسي
     pattern1 = r"/d/([a-zA-Z0-9_-]+)"
-    # النمط الثاني: id=FILE_ID
+    # نمط لرابط الإصدار القديم أو المعدل
     pattern2 = r"id=([a-zA-Z0-9_-]+)"
+    # نمط لرابط مشاركة Google Sheets
+    pattern3 = r"/spreadsheets/d/([a-zA-Z0-9_-]+)"
     
-    match = re.search(pattern1, url)
-    if match:
-        return match.group(1)
-    
-    match = re.search(pattern2, url)
-    if match:
-        return match.group(1)
+    for pattern in [pattern1, pattern2, pattern3]:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
     
     return None
 
+def download_from_google_drive(file_id, temp_file_path):
+    """تنزيل ملف من Google Drive باستخدام معرف الملف."""
+    try:
+        # طريقة 1: استخدام رابط التنزيل المباشر
+        url = f'https://drive.google.com/uc?export=download&id={file_id}'
+        response = requests.get(url)
+        
+        # التحقق مما إذا كان الرد يحتوي على صفحة تأكيد بدلاً من الملف
+        if 'confirm=' in response.text:
+            st.sidebar.warning("File requires confirmation to download - trying alternative method")
+            
+            # استخراج رمز التأكيد
+            confirm_match = re.search(r'confirm=([0-9a-zA-Z_-]+)', response.text)
+            if confirm_match:
+                confirm_code = confirm_match.group(1)
+                url = f'https://drive.google.com/uc?export=download&confirm={confirm_code}&id={file_id}'
+                response = requests.get(url)
+        
+        # التحقق من حالة الاستجابة
+        if response.status_code != 200:
+            st.sidebar.error(f"Method 1 failed: Status code {response.status_code}")
+            return False
+            
+        # حفظ المحتوى في الملف المؤقت
+        with open(temp_file_path, 'wb') as f:
+            f.write(response.content)
+            
+        file_size = os.path.getsize(temp_file_path)
+        # التحقق من حجم الملف
+        if file_size < 1024:
+            content_type = response.headers.get('Content-Type', '')
+            st.sidebar.error(f"Method 1: File too small ({file_size} bytes). Content type: {content_type}")
+            
+            # التحقق مما إذا كان المحتوى هو صفحة HTML بدلاً من Excel
+            if 'text/html' in content_type:
+                st.sidebar.error("Received HTML page instead of Excel file")
+                return False
+                
+            return False
+            
+        st.sidebar.success(f"Method 1: Downloaded file size: {file_size/1024:.2f} KB")
+        return True
+    except Exception as e:
+        st.sidebar.error(f"Method 1 error: {str(e)}")
+        logging.error(f"Google Drive download error: {e}")
+        return False
+
+def download_from_export_link(file_id, temp_file_path):
+    """تنزيل ملف من Google Sheets مباشرة كملف Excel."""
+    try:
+        # استخدام رابط تصدير Google Sheets
+        export_url = f'https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx'
+        
+        response = requests.get(export_url)
+        if response.status_code != 200:
+            st.sidebar.error(f"Method 2 failed: Status code {response.status_code}")
+            return False
+            
+        # حفظ المحتوى في الملف المؤقت
+        with open(temp_file_path, 'wb') as f:
+            f.write(response.content)
+            
+        file_size = os.path.getsize(temp_file_path)
+        if file_size < 1024:
+            st.sidebar.error(f"Method 2: File too small ({file_size} bytes)")
+            return False
+            
+        st.sidebar.success(f"Method 2: Downloaded file size: {file_size/1024:.2f} KB")
+        return True
+    except Exception as e:
+        st.sidebar.error(f"Method 2 error: {str(e)}")
+        logging.error(f"Google Sheets export error: {e}")
+        return False
+
+def upload_excel_file():
+    """السماح للمستخدم بتحميل ملف Excel مباشرة."""
+    uploaded_file = st.sidebar.file_uploader("أو قم بتحميل ملف Excel مباشرة:", type=['xlsx', 'xls'])
+    if uploaded_file is not None:
+        return uploaded_file
+    return None
+
 @st.cache_data(ttl=300)  # تحديث كل 5 دقائق
-def fetch_excel_file(timestamp):
+def fetch_excel_file(url=None, timestamp=None):
     """
-    تنزيل ملف Excel من Google Drive وحفظه في موقع مؤقت.
+    محاولة تنزيل ملف Excel باستخدام عدة طرق.
     """
     try:
+        # التحقق من وجود ملف مرفوع
+        uploaded_file = upload_excel_file()
+        if uploaded_file is not None:
+            st.sidebar.success("Using uploaded file")
+            return uploaded_file
+    
+        # إنشاء ملف مؤقت للتنزيل
         with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
-            # رابط Google Drive
-            url = 'https://docs.google.com/spreadsheets/d/1vTa0AAqVztj9gSQb2r-OsTc1uHu6dC8n/edit?usp=drive_link&ouid=114445506269373692681&rtpof=true&sd=true'
+            temp_file_path = temp_file.name
+        
+        # التحقق مما إذا كان الرابط موجودًا
+        if not url:
+            st.sidebar.error("No URL provided")
+            return None
             
-            # استخراج معرف الملف
-            file_id = extract_file_id_from_url(url)
-            if not file_id:
-                st.sidebar.error("Could not extract file ID from the URL")
-                return None
+        # استخراج معرف الملف
+        file_id = extract_file_id_from_url(url)
+        if not file_id:
+            st.sidebar.error("Could not extract file ID from the URL")
+            return None
             
-            # رابط التنزيل المباشر من Google Drive
-            download_url = f'https://drive.google.com/uc?export=download&id={file_id}'
+        st.sidebar.info(f"Attempting to download file using ID: {file_id}")
+        
+        # الطريقة 1: استخدام رابط تنزيل Google Drive
+        if download_from_google_drive(file_id, temp_file_path):
+            return temp_file_path
             
-            st.sidebar.info(f"Attempting to download file using ID: {file_id}")
+        # الطريقة 2: استخدام رابط تصدير Google Sheets
+        if download_from_export_link(file_id, temp_file_path):
+            return temp_file_path
             
-            # تنزيل الملف باستخدام مكتبة requests
-            response = requests.get(download_url)
-            if response.status_code != 200:
-                st.sidebar.error(f"Failed to download file: HTTP status {response.status_code}")
-                return None
-            
-            # كتابة المحتوى إلى الملف المؤقت
-            with open(temp_file.name, 'wb') as f:
-                f.write(response.content)
-            
-            # التحقق من حجم الملف
-            file_size = os.path.getsize(temp_file.name)
-            if file_size < 1024:  # الملف أقل من 1KB يعتبر غير صالح
-                st.sidebar.error(f"Downloaded file is too small: {file_size} bytes")
-                raise ValueError("Downloaded file is too small or empty")
-                
-            st.sidebar.success(f"Downloaded Excel file at {time.strftime('%H:%M:%S')} - Size: {file_size/1024:.2f} KB")
-            return temp_file.name
+        # فشلت جميع الطرق
+        st.sidebar.error("All download methods failed. Please upload the file directly.")
+        return None
     except Exception as e:
-        logging.error(f"Failed to download Excel file: {e}")
-        st.sidebar.error(f"Failed to download Excel file: {str(e)}")
+        logging.error(f"Failed to fetch Excel file: {e}")
+        st.sidebar.error(f"Failed to fetch Excel file: {str(e)}")
         return None
 
-def load_data():
+def load_data(url=None):
     """تحميل البيانات من ملف Excel."""
     try:
         timestamp = int(time.time())
-        file_path = fetch_excel_file(timestamp)
+        file_source = fetch_excel_file(url, timestamp)
         
-        if not file_path or not os.path.exists(file_path):
-            st.error("Could not download the Excel file.")
+        if not file_source:
+            st.error("Could not get the Excel file.")
             return pd.DataFrame()
         
-        # عرض معلومات عن الملف قبل القراءة
-        file_size = os.path.getsize(file_path)
-        st.sidebar.info(f"File size: {file_size/1024:.2f} KB")
+        # التحقق مما إذا كان المصدر ملفًا مرفوعًا أو ملفًا مؤقتًا
+        if isinstance(file_source, str) and os.path.exists(file_source):
+            # ملف مؤقت تم تنزيله
+            file_size = os.path.getsize(file_source)
+            st.sidebar.info(f"Downloaded File size: {file_size/1024:.2f} KB")
+            try:
+                df = pd.read_excel(file_source)
+                # تنظيف الملف المؤقت
+                try:
+                    os.unlink(file_source)
+                except:
+                    logging.warning(f"Failed to delete temporary file: {file_source}")
+            except Exception as excel_error:
+                logging.error(f"Error reading downloaded Excel file: {excel_error}")
+                st.error(f"Error reading Excel file: {excel_error}")
+                return pd.DataFrame()
+        else:
+            # ملف مرفوع مباشرة
+            try:
+                df = pd.read_excel(file_source)
+            except Exception as excel_error:
+                logging.error(f"Error reading uploaded Excel file: {excel_error}")
+                st.error(f"Error reading Excel file: {excel_error}")
+                return pd.DataFrame()
         
-        try:
-            # محاولة قراءة الملف
-            df = pd.read_excel(file_path)
-            
-            # التحقق من البيانات
-            if df.empty:
-                st.sidebar.warning("DataFrame is empty after loading")
-            else:
-                st.sidebar.success(f"DataFrame loaded with {len(df)} rows and {len(df.columns)} columns")
-        except Exception as excel_error:
-            logging.error(f"Error reading Excel file: {excel_error}")
-            st.error(f"Error reading Excel file: {excel_error}")
-            st.sidebar.error(traceback.format_exc())
+        # التحقق من البيانات
+        if df.empty:
+            st.sidebar.warning("DataFrame is empty after loading")
             return pd.DataFrame()
-        
-        # تنظيف الملف المؤقت
-        try:
-            os.unlink(file_path)
-        except Exception as del_error:
-            logging.warning(f"Failed to delete temporary file: {file_path}, error: {del_error}")
+        else:
+            st.sidebar.success(f"DataFrame loaded with {len(df)} rows and {len(df.columns)} columns")
         
         # إزالة الأعمدة غير الضرورية
         cols_to_drop = [col for col in df.columns if 'Unnamed: 34' in col or 'Unnamed: 0' in col or 'Dispute' in col]
@@ -149,7 +238,8 @@ def load_data():
         # عرض معلومات التتبع
         if not df.empty and 'IMEI' in df.columns:
             st.sidebar.write(f"Number of records: {len(df)}")
-            st.sidebar.write(f"Sample IMEI: {df['IMEI'].iloc[0]}")
+            if len(df) > 0:
+                st.sidebar.write(f"Sample IMEI: {df['IMEI'].iloc[0]}")
             st.sidebar.text(f"Last updated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
         
         return df
@@ -224,8 +314,12 @@ def format_value(key, value):
 st.title('Returns Tracker (IMEI)')
 
 # إضافة حقل إدخال الرابط
+st.sidebar.markdown("### طرق الحصول على البيانات")
 default_url = 'https://docs.google.com/spreadsheets/d/1vTa0AAqVztj9gSQb2r-OsTc1uHu6dC8n/edit?usp=drive_link&ouid=114445506269373692681&rtpof=true&sd=true'
-excel_url = st.sidebar.text_input('Google Drive URL:', value=default_url)
+excel_url = st.sidebar.text_input('1. رابط Google Drive / Sheets:', value=default_url)
+st.sidebar.markdown("### أو")
+st.sidebar.markdown("2. رفع الملف مباشرة:")
+# ملاحظة: الكود لتحميل الملف موجود في دالة fetch_excel_file
 
 # زر تحديث البيانات
 if st.sidebar.button('⟳ Refresh Data', key='refresh_button'):
@@ -234,11 +328,11 @@ if st.sidebar.button('⟳ Refresh Data', key='refresh_button'):
 
 # تحميل البيانات
 with st.spinner('Loading data...'):
-    df = load_data()
+    df = load_data(excel_url)
 
 # عرض مؤشر التقدم
 if df.empty:
-    st.warning("Data was not loaded correctly. Please check the URL or file format.")
+    st.warning("Data was not loaded correctly. Please check the URL, upload a file, or verify the file format.")
 else:
     st.success(f"Successfully loaded {len(df)} records")
 
