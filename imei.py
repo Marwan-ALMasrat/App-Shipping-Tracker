@@ -42,7 +42,7 @@ def fetch_excel_file(timestamp):
     """
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
-            url = f'https://docs.google.com/spreadsheets/d/1vTa0AAqVztj9gSQb2r-OsTc1uHu6dC8n/edit?usp=drive_link&ouid=114445506269373692681&rtpof=true&sd=true'
+            url = 'https://docs.google.com/spreadsheets/d/1vTa0AAqVztj9gSQb2r-OsTc1uHu6dC8n/edit?usp=drive_link&ouid=114445506269373692681&rtpof=true&sd=true'
             urllib.request.urlretrieve(url, temp_file.name)
             
             # التحقق من حجم الملف
